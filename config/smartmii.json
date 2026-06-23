@@ -1,0 +1,5 @@
+{
+  "mqtt_prefix": "smartmii",
+  "poll_interval": 30,
+  "fans": []
+}

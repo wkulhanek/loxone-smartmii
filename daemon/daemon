@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Smartmii Fan Control daemon startup script
+# Executed at boot time as root by LoxBerry
+
+PLUGINNAME=REPLACELBPPLUGINDIR
+DAEMON=REPLACELBPBINDIR/smartmii_daemon.py
+CONFIGDIR=REPLACELBPCONFIGDIR
+LOGDIR=REPLACELBPLOGDIR
+DATADIR=REPLACELBPDATADIR
+PYTHON="$DATADIR/venv/bin/python3"
+PIDFILE=/run/shm/smartmii.pid
+
+if [ -f "$PIDFILE" ]; then
+    OLDPID=$(cat "$PIDFILE")
+    if kill -0 "$OLDPID" 2>/dev/null; then
+        logger "smartmii: Daemon already running (PID $OLDPID)"
+        exit 0
+    fi
+fi
+
+if [ -x "$DAEMON" ]; then
+    logger "smartmii: Starting daemon"
+    "$PYTHON" "$DAEMON" \
+        --configdir "$CONFIGDIR" \
+        --logdir "$LOGDIR" &
+    echo $! > "$PIDFILE"
+    logger "smartmii: Daemon started (PID $!)"
+else
+    logger "smartmii: Daemon script not found or not executable: $DAEMON"
+fi
+
+exit 0
