@@ -37,7 +37,7 @@ for f in cfg.get('fans', []):
     print(f['id'])
 " 2>/dev/null)
 
-    TOPICS="power speed fan_level mode oscillate angle buzzer child_lock led_brightness temperature humidity delay_off ionizer speed_rpm online"
+    TOPICS="power fan_level mode oscillate angle delay_off buzzer child_lock led_brightness online"
 
     for FAN_ID in $FANS; do
         for TOPIC in $TOPICS; do

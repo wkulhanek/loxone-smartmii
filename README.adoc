@@ -1,0 +1,316 @@
+= Smartmii Fan Control
+:toc: macro
+:toclevels: 2
+:icons: font
+
+LoxBerry plugin for controlling Smartmi Standing Fan 3 (zhimi.fan.za5) devices via Xiaomi Cloud API and MQTT.
+
+toc::[]
+
+== Overview
+
+Smartmii connects your Smartmi Standing Fan 3 to your Loxone Miniserver through LoxBerry's MQTT gateway.
+The plugin communicates with the fans through the Xiaomi Cloud API, publishes device status to MQTT topics, and accepts commands via MQTT -- enabling full integration with Loxone Config.
+
+=== Features
+
+* Control multiple Smartmi fans from a single LoxBerry instance
+* Cloud-based communication (no local network restrictions)
+* Automatic device discovery via Xiaomi Cloud
+* Retained MQTT messages for reliable state synchronization
+* Downloadable Loxone Config XML template for quick setup
+* Hot-reload of configuration (no daemon restart needed)
+
+== Prerequisites
+
+* **LoxBerry 3.0** or newer
+* **Xiaomi / Mi Home account** with your fans registered
+* **MQTT broker** (built into LoxBerry)
+* Fan model: **Smartmi Standing Fan 3** (`zhimi.fan.za5`)
+
+== Installation
+
+. Open your LoxBerry web interface
+. Navigate to **Plugin Management**
+. Click **Add Plugin** and enter the GitHub repository URL:
++
+----
+https://github.com/wkulhane/loxone-smartmii
+----
+. Click **Install**
+
+The installer automatically creates a Python virtual environment and installs the required dependencies (`paho-mqtt`, `requests`, `pycryptodome`).
+
+== Configuration
+
+=== Step 1: Xiaomi Cloud Login
+
+. Open the plugin web UI (LoxBerry > Plugins > Smartmii Fan Control)
+. Expand the **Xiaomi Cloud Login** section
+. Select your **server region** (e.g. `de` for Germany)
+. Enter your Xiaomi account **email** and **password**
+. Click **Login**
+
+The login process is multi-step:
+
+. **Captcha** -- Xiaomi shows a captcha image. Enter the code and click Submit.
+. **2FA** -- A verification code is sent to your email. Enter it and click Submit.
+. On success, the session is saved to disk. You do not need to log in again unless the session expires.
+
+=== Step 2: Add Fans
+
+The easiest way to add fans is via device discovery:
+
+. Click **Discover Devices** in the Fans section
+. A list of all devices on your Xiaomi account appears
+. Click the **+** button next to each fan you want to add
+. The fan is added to your configuration with its name and Device ID (DID)
+
+Alternatively, add fans manually by clicking **Add Fan** and entering the device name and DID.
+
+=== Step 3: Settings
+
+[cols="1,1,3"]
+|===
+| Setting | Default | Description
+
+| MQTT Prefix
+| `smartmii`
+| Prefix for all MQTT topics
+
+| Poll Interval
+| `30`
+| Seconds between status polls (5-300)
+
+| Server Region
+| `de`
+| Xiaomi Cloud server (cn, de, us, ru, tw, sg, in, i2)
+|===
+
+Click **Save Settings** after making changes.
+
+=== Step 4: Start the Daemon
+
+Click **Restart** in the daemon control section. The daemon connects to the MQTT broker and begins polling your fans.
+
+== Pitfalls and Known Issues
+
+Xiaomi rate-limits verification codes::
+If you trigger too many captcha or 2FA attempts in a single day, Xiaomi stops sending verification codes. You must **wait approximately 24 hours** before trying again. Avoid repeatedly clicking "Login" if the captcha fails -- double-check the code carefully before submitting.
+
+Session expiration::
+The Xiaomi Cloud session can expire after an extended period. When this happens, the daemon logs an error and exits. You must re-login via the web UI. The daemon cannot re-authenticate automatically because the login requires interactive captcha and 2FA.
+
+Cloud API latency::
+Commands sent via the cloud take 1-2 seconds to reach the fan (compared to instant local control). Status updates are only as current as the last poll interval.
+
+Mode property is a string::
+The `mode` status topic publishes `natural` or `normal` as text, not a numeric value. This requires special handling if you want to use it in Loxone (the XML template excludes it for this reason).
+
+Fan must be registered in Mi Home::
+The fan must be added to your Mi Home app and associated with your Xiaomi account before the plugin can discover or control it.
+
+== MQTT Reference
+
+All topics use retained messages. The default prefix is `smartmii`.
+
+=== Status Topics (read-only)
+
+Published by the daemon every poll interval.
+
+Topic pattern: `{prefix}/{fan_id}/status/{property}`
+
+[cols="1,1,1,2"]
+|===
+| Property | Type | Range | Description
+
+| `power`
+| Binary
+| 0 / 1
+| Power state
+
+| `fan_level`
+| Integer
+| 1-4
+| Fan speed level
+
+| `mode`
+| String
+| normal / natural
+| Operating mode
+
+| `oscillate`
+| Binary
+| 0 / 1
+| Oscillation on/off
+
+| `angle`
+| Integer
+| 30 / 60 / 90 / 120
+| Oscillation angle (degrees)
+
+| `delay_off`
+| Integer
+| 0-480
+| Auto-off timer (minutes), 0 = disabled
+
+| `buzzer`
+| Binary
+| 0 / 1
+| Button sound feedback
+
+| `child_lock`
+| Binary
+| 0 / 1
+| Physical button lock
+
+| `led_brightness`
+| Integer
+| 0-100
+| LED brightness (%)
+
+| `online`
+| Binary
+| 0 / 1
+| Device reachable via cloud
+|===
+
+=== Command Topics (write)
+
+Publish a value to control the fan. The daemon re-polls the fan after each command.
+
+Topic pattern: `{prefix}/{fan_id}/cmd/{command}`
+
+[cols="1,2,2"]
+|===
+| Command | Accepted Values | Notes
+
+| `power`
+| on / off / 1 / 0 / toggle
+| `toggle` inverts the current state
+
+| `fan_level`
+| 1-4
+| Clamped to valid range
+
+| `mode`
+| natural / normal
+|
+
+| `oscillate`
+| on / off / 1 / 0
+|
+
+| `angle`
+| 30 / 60 / 90 / 120
+| Invalid values are rejected
+
+| `delay_off`
+| 0-480
+| Minutes; 0 cancels the timer
+
+| `buzzer`
+| on / off / 1 / 0
+|
+
+| `child_lock`
+| on / off / 1 / 0
+|
+
+| `led_brightness`
+| 0-100
+| Clamped to valid range
+|===
+
+=== Daemon Status
+
+[cols="1,2"]
+|===
+| Topic | Values
+
+| `{prefix}/daemon/status`
+| `online` when running, `offline` on shutdown (will message)
+|===
+
+=== Examples
+
+Turn on the office fan:
+----
+mosquitto_pub -t "smartmii/buero/cmd/power" -m "on"
+----
+
+Set fan level to 3:
+----
+mosquitto_pub -t "smartmii/buero/cmd/fan_level" -m "3"
+----
+
+Monitor all status updates:
+----
+mosquitto_sub -t "smartmii/#" -v
+----
+
+== Loxone Config Integration
+
+The plugin can generate an XML template for importing Virtual Inputs into Loxone Config.
+
+=== Download the XML Template
+
+. Open the plugin web UI
+. Expand the **MQTT Topics** section at the bottom
+. Click the **VI_MQTT_UDP_Smartmii.xml** button
+. Save the downloaded file
+
+=== Import into Loxone Config
+
+. Open **Loxone Config**
+. Navigate to **Periphery** in the left panel
+. Right-click **Virtual Inputs** and select **Import**
+. Select the downloaded `VI_MQTT_UDP_Smartmii.xml` file
+. A new Virtual Input named "Smartmii Fans (MQTT UDP)" appears with entries for each fan property
+
+The template uses **port 11883** (LoxBerry MQTT Gateway UDP port). Each configured fan gets entries for: power, fan_level, oscillate, angle, delay_off, buzzer, child_lock, led_brightness, and online.
+
+NOTE: The `mode` property is excluded from the XML template because it publishes string values (`natural`/`normal`) which cannot be mapped as analog or digital inputs directly.
+
+=== Using the Virtual Inputs
+
+After import, drag the Virtual Input entries you need into your Loxone project:
+
+* **Power** (0/1) -- connect to a switch or status indicator
+* **Fan Level** (1-4) -- connect to a status display or visualization
+* **Online** (0/1) -- use for monitoring and alerts
+
+To send commands to the fans, create Virtual Outputs manually in Loxone Config that publish to the `{prefix}/{fan_id}/cmd/{command}` MQTT topics.
+
+== Supported Device
+
+**Smartmi Standing Fan 3** (`zhimi.fan.za5`)
+
+MIoT property mapping used by the plugin:
+
+[cols="1,1,1,1"]
+|===
+| SIID | PIID | Property | Type
+
+| 2 | 1 | power | boolean
+| 2 | 2 | fan_level | integer (1-4)
+| 2 | 3 | mode | boolean (true=natural)
+| 2 | 4 | oscillate | boolean
+| 2 | 5 | angle | integer (30/60/90/120)
+| 3 | 1 | delay_off | integer (minutes)
+| 5 | 1 | buzzer | boolean
+| 6 | 1 | child_lock | boolean
+| 7 | 1 | led_brightness | integer (0-100)
+|===
+
+== Uninstall
+
+When uninstalled through LoxBerry Plugin Management:
+
+. The daemon is stopped
+. All retained MQTT messages are cleared (requires `mosquitto_pub`)
+. Plugin files are removed
+
+== License
+
+This project is licensed under the Apache License 2.0.

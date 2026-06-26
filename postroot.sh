@@ -17,7 +17,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "<INFO> Installing Python dependencies into venv..."
-"$VENVDIR/bin/pip" install python-miio paho-mqtt 2>&1
+"$VENVDIR/bin/pip" install paho-mqtt requests pycryptodome 2>&1
 
 if [ $? -ne 0 ]; then
     echo "<FAIL> Failed to install Python dependencies"
@@ -26,6 +26,7 @@ fi
 
 echo "<INFO> Setting daemon executable..."
 chmod +x "$LBHOMEDIR/bin/plugins/$PDIR/smartmii_daemon.py"
+chmod +x "$LBHOMEDIR/bin/plugins/$PDIR/cloud_login.py"
 
 echo "<OK> Post-root installation completed"
 exit 0

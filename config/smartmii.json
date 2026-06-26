@@ -1,5 +1,6 @@
 {
   "mqtt_prefix": "smartmii",
   "poll_interval": 30,
+  "xiaomi_server": "de",
   "fans": []
 }

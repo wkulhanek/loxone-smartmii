@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Smartmii LoxBerry Plugin - Fan control daemon.
 
-Polls Smartmi Standing Fan 3 (zhimi.fan.za5) devices via python-miio,
+Controls Smartmi Standing Fan 3 (zhimi.fan.za5) devices via Xiaomi Cloud API,
 publishes status to MQTT, and accepts commands via MQTT.
 """
 
@@ -12,30 +12,58 @@ import logging.handlers
 import os
 import signal
 import sys
-import threading
 import time
 
 import paho.mqtt.client as mqtt
-from miio.integrations.fan.zhimi.zhimi_miot import FanZA5, OperationModeFanZA5
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from xiaomi_cloud import XiaomiCloudClient
 
 logger = logging.getLogger("smartmii")
 
 PIDFILE = "/run/shm/smartmii.pid"
 
-STATUS_PROPERTIES = [
-    "power", "speed", "fan_level", "mode", "oscillate", "angle",
-    "buzzer", "child_lock", "led_brightness", "temperature",
-    "humidity", "delay_off", "ionizer", "speed_rpm",
+# zhimi.fan.za5 MIoT SIID/PIID mapping — cloud-available properties only
+STATUS_PROPS = [
+    (2, 1, "power"),
+    (2, 2, "fan_level"),
+    (2, 3, "mode"),
+    (2, 4, "oscillate"),
+    (2, 5, "angle"),
+    (3, 1, "delay_off"),
+    (5, 1, "buzzer"),
+    (6, 1, "child_lock"),
+    (7, 1, "led_brightness"),
 ]
 
-COMMAND_HANDLERS = [
-    "power", "speed", "fan_level", "mode", "oscillate", "angle",
-    "buzzer", "child_lock", "led_brightness", "ionizer", "delay_off",
-]
+# command name -> (siid, piid, value_converter)
+COMMAND_MAP = {
+    "power":          (2, 1, None),
+    "fan_level":      (2, 2, lambda v: max(1, min(4, int(v)))),
+    "mode":           (2, 3, lambda v: v.lower() == "natural"),
+    "oscillate":      (2, 4, None),
+    "angle":          (2, 5, lambda v: int(v) if int(v) in (30, 60, 90, 120) else None),
+    "delay_off":      (3, 1, lambda v: max(0, int(v))),
+    "buzzer":         (5, 1, None),
+    "child_lock":     (6, 1, None),
+    "led_brightness": (7, 1, lambda v: max(0, min(100, int(v)))),
+}
+
+STATUS_NAMES = [name for _, _, name in STATUS_PROPS]
+COMMAND_NAMES = list(COMMAND_MAP.keys())
 
 
 def parse_bool(value):
     return value.lower() in ("on", "1", "true", "yes")
+
+
+def format_status_value(name, value):
+    """Convert cloud API values to MQTT-friendly strings."""
+    if isinstance(value, bool):
+        if name == "mode":
+            return "natural" if value else "normal"
+        return "1" if value else "0"
+    return str(value)
 
 
 def get_mqtt_credentials():
@@ -58,37 +86,13 @@ def get_mqtt_credentials():
         return {"host": "localhost", "port": 1883, "user": "", "pass": ""}
 
 
-def load_config(config_path):
-    with open(config_path) as f:
-        return json.load(f)
-
-
-def extract_status(status):
-    return {
-        "power": "1" if status.is_on else "0",
-        "speed": str(status.fan_speed),
-        "fan_level": str(status.fan_level),
-        "mode": "natural" if status.mode == OperationModeFanZA5.Nature else "normal",
-        "oscillate": "1" if status.oscillate else "0",
-        "angle": str(status.angle),
-        "buzzer": "1" if status.buzzer else "0",
-        "child_lock": "1" if status.child_lock else "0",
-        "led_brightness": str(status.led_brightness),
-        "temperature": str(status.temperature),
-        "humidity": str(status.humidity),
-        "delay_off": str(status.delay_off_countdown),
-        "ionizer": "1" if status.ionizer else "0",
-        "speed_rpm": str(status.speed_rpm),
-    }
-
-
 class SmartmiDaemon:
     def __init__(self, config_path, log_dir):
         self.config_path = config_path
         self.log_dir = log_dir
         self.config = {}
         self.fans = {}
-        self.fan_locks = {}
+        self.cloud = None
         self.mqtt_client = None
         self.running = False
         self.config_mtime = 0
@@ -96,7 +100,6 @@ class SmartmiDaemon:
     def setup_logging(self):
         os.makedirs(self.log_dir, exist_ok=True)
         log_file = os.path.join(self.log_dir, "smartmii.log")
-
         handler = logging.handlers.RotatingFileHandler(
             log_file, maxBytes=1_000_000, backupCount=3
         )
@@ -107,9 +110,24 @@ class SmartmiDaemon:
         logger.addHandler(logging.StreamHandler())
         logger.setLevel(logging.INFO)
 
+    def init_cloud(self):
+        server = self.config.get("xiaomi_server", "de")
+        self.cloud = XiaomiCloudClient(server=server)
+        config_dir = os.path.dirname(self.config_path)
+        session_file = os.path.join(config_dir, self.config.get("session_file", "xiaomi_session.json"))
+        if not self.cloud.load_session(session_file):
+            logger.error("No Xiaomi Cloud session found at %s. Please login via the web UI.", session_file)
+            return False
+        if not self.cloud.is_session_valid():
+            logger.error("Xiaomi Cloud session expired. Please re-login via the web UI.")
+            return False
+        logger.info("Xiaomi Cloud session loaded (server: %s)", server)
+        return True
+
     def load_and_apply_config(self):
         try:
-            new_config = load_config(self.config_path)
+            with open(self.config_path) as f:
+                new_config = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError) as e:
             logger.error("Failed to load config: %s", e)
             return False
@@ -119,47 +137,36 @@ class SmartmiDaemon:
         self.config = new_config
 
         old_fan_ids = set(self.fans.keys())
-        new_fan_ids = {
-            f["id"] for f in new_config.get("fans", []) if f.get("enabled", True)
-        }
+        new_fan_ids = set()
+
+        for fan_cfg in new_config.get("fans", []):
+            if not all(k in fan_cfg for k in ("id", "did")):
+                logger.error("Fan config missing required fields: %s", fan_cfg)
+                continue
+            if not fan_cfg.get("enabled", True):
+                continue
+            new_fan_ids.add(fan_cfg["id"])
 
         for fan_id in old_fan_ids - new_fan_ids:
             logger.info("Removing fan: %s", fan_id)
             self.fans.pop(fan_id, None)
-            self.fan_locks.pop(fan_id, None)
             if self.mqtt_client and self.mqtt_client.is_connected():
                 prefix = self.config.get("mqtt_prefix", "smartmii")
-                self.mqtt_client.publish(
-                    f"{prefix}/{fan_id}/status/online", "0", retain=True
-                )
+                self.mqtt_client.publish(f"{prefix}/{fan_id}/status/online", "0", retain=True)
 
         for fan_cfg in new_config.get("fans", []):
-            if not all(k in fan_cfg for k in ("id", "ip", "token")):
-                logger.error("Fan config missing required fields: %s", fan_cfg)
+            if not all(k in fan_cfg for k in ("id", "did")):
                 continue
             if not fan_cfg.get("enabled", True):
                 continue
             fan_id = fan_cfg["id"]
             if fan_id not in self.fans:
-                logger.info("Adding fan: %s (%s)", fan_cfg["name"], fan_cfg["ip"])
-                try:
-                    self.fans[fan_id] = {
-                        "device": FanZA5(fan_cfg["ip"], fan_cfg["token"]),
-                        "config": fan_cfg,
-                        "online": False,
-                    }
-                    self.fan_locks[fan_id] = threading.Lock()
-                except Exception as e:
-                    logger.error("Failed to create fan %s: %s", fan_id, e)
-            else:
-                existing = self.fans[fan_id]["config"]
-                if existing["ip"] != fan_cfg["ip"] or existing["token"] != fan_cfg["token"]:
-                    logger.info("Updating fan connection: %s", fan_id)
-                    try:
-                        self.fans[fan_id]["device"] = FanZA5(fan_cfg["ip"], fan_cfg["token"])
-                        self.fans[fan_id]["config"] = fan_cfg
-                    except Exception as e:
-                        logger.error("Failed to update fan %s: %s", fan_id, e)
+                logger.info("Adding fan: %s (DID: %s)", fan_cfg.get("name", fan_id), fan_cfg["did"])
+            self.fans[fan_id] = {
+                "config": fan_cfg,
+                "online": False,
+                "last_status": {},
+            }
 
         if self.mqtt_client and self.mqtt_client.is_connected():
             if old_prefix and old_prefix != self.config.get("mqtt_prefix", "smartmii"):
@@ -180,9 +187,7 @@ class SmartmiDaemon:
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
 
         will_prefix = self.config.get("mqtt_prefix", "smartmii")
-        self.mqtt_client.will_set(
-            f"{will_prefix}/daemon/status", "offline", retain=True
-        )
+        self.mqtt_client.will_set(f"{will_prefix}/daemon/status", "offline", retain=True)
 
         logger.info("Connecting to MQTT broker %s:%d", creds["host"], creds["port"])
         self.mqtt_client.connect(creds["host"], creds["port"], keepalive=60)
@@ -220,116 +225,76 @@ class SmartmiDaemon:
             logger.warning("Command for unknown fan: %s", fan_id)
             return
 
-        if not self.fans[fan_id]["online"]:
-            logger.warning("Command for offline fan: %s", fan_id)
-            return
-
         logger.info("Command: %s/%s = %s", fan_id, command, payload)
-        threading.Thread(
-            target=self._execute_command,
-            args=(fan_id, command, payload),
-            daemon=True,
-        ).start()
+        self._execute_command(fan_id, command, payload)
 
     def _execute_command(self, fan_id, command, payload):
         fan_entry = self.fans.get(fan_id)
         if not fan_entry:
             return
 
-        lock = self.fan_locks.get(fan_id)
-        if not lock:
+        if command not in COMMAND_MAP:
+            logger.warning("Unknown command: %s", command)
             return
 
-        with lock:
-            device = fan_entry["device"]
-            try:
-                self._dispatch_command(device, fan_entry, command, payload)
+        siid, piid, converter = COMMAND_MAP[command]
+        did = fan_entry["config"]["did"]
+
+        try:
+            if converter:
+                value = converter(payload)
+                if value is None:
+                    logger.warning("Invalid value for %s: %s", command, payload)
+                    return
+            elif command == "power":
+                if payload.lower() == "toggle":
+                    current = fan_entry.get("last_status", {}).get("power", "0")
+                    value = current != "1"
+                else:
+                    value = parse_bool(payload)
+            elif command in ("buzzer", "child_lock"):
+                value = 1 if parse_bool(payload) else 0
+            else:
+                value = parse_bool(payload)
+
+            success = self.cloud.set_property(did, siid, piid, value)
+            if success:
+                logger.info("Command %s/%s succeeded", fan_id, command)
                 time.sleep(0.5)
                 self._poll_fan(fan_id, fan_entry)
-            except Exception as e:
-                logger.error("Command failed for %s/%s: %s", fan_id, command, e)
-
-    def _dispatch_command(self, device, fan_entry, command, payload):
-        if command == "power":
-            if payload.lower() == "toggle":
-                if fan_entry.get("last_status", {}).get("power") == "1":
-                    device.off()
-                else:
-                    device.on()
-            elif parse_bool(payload):
-                device.on()
             else:
-                device.off()
+                logger.error("Command %s/%s failed via cloud API", fan_id, command)
 
-        elif command == "speed":
-            device.set_speed(max(1, min(100, int(payload))))
-
-        elif command == "fan_level":
-            device.set_fan_level(max(1, min(4, int(payload))))
-
-        elif command == "mode":
-            if payload.lower() == "natural":
-                device.set_mode(OperationModeFanZA5.Nature)
-            else:
-                device.set_mode(OperationModeFanZA5.Normal)
-
-        elif command == "oscillate":
-            device.set_oscillate(parse_bool(payload))
-
-        elif command == "angle":
-            angle = int(payload)
-            if angle in (30, 60, 90, 120):
-                device.set_angle(angle)
-            else:
-                logger.warning("Invalid angle: %s (must be 30, 60, 90, or 120)", angle)
-
-        elif command == "buzzer":
-            device.set_buzzer(parse_bool(payload))
-
-        elif command == "child_lock":
-            device.set_child_lock(parse_bool(payload))
-
-        elif command == "led_brightness":
-            device.set_led_brightness(max(0, min(100, int(payload))))
-
-        elif command == "ionizer":
-            device.set_ionizer(parse_bool(payload))
-
-        elif command == "delay_off":
-            device.delay_off(max(0, int(payload)))
-
-        else:
-            logger.warning("Unknown command: %s", command)
+        except Exception as e:
+            logger.error("Command failed for %s/%s: %s", fan_id, command, e)
 
     def _poll_fan(self, fan_id, fan_entry):
         prefix = self.config.get("mqtt_prefix", "smartmii")
         base = f"{prefix}/{fan_id}/status"
-        device = fan_entry["device"]
+        did = fan_entry["config"]["did"]
 
-        try:
-            status = device.status()
-            values = extract_status(status)
-            values["online"] = "1"
-            fan_entry["online"] = True
-            fan_entry["last_status"] = values
+        prop_keys = [(s, p) for s, p, _ in STATUS_PROPS]
+        values = self.cloud.get_properties(did, prop_keys)
 
-            for key, value in values.items():
-                self.mqtt_client.publish(f"{base}/{key}", value, retain=True)
-
-        except Exception as e:
-            logger.warning("Failed to poll fan %s: %s", fan_id, e)
+        if values is None:
+            logger.warning("Failed to poll fan %s", fan_id)
             if fan_entry["online"]:
                 fan_entry["online"] = False
                 self.mqtt_client.publish(f"{base}/online", "0", retain=True)
+            return
+
+        fan_entry["online"] = True
+        self.mqtt_client.publish(f"{base}/online", "1", retain=True)
+
+        for siid, piid, name in STATUS_PROPS:
+            if (siid, piid) in values:
+                mqtt_val = format_status_value(name, values[(siid, piid)])
+                fan_entry["last_status"][name] = mqtt_val
+                self.mqtt_client.publish(f"{base}/{name}", mqtt_val, retain=True)
 
     def poll_all_fans(self):
         for fan_id, fan_entry in list(self.fans.items()):
-            lock = self.fan_locks.get(fan_id)
-            if lock and lock.acquire(blocking=False):
-                try:
-                    self._poll_fan(fan_id, fan_entry)
-                finally:
-                    lock.release()
+            self._poll_fan(fan_id, fan_entry)
 
     def check_config_changed(self):
         try:
@@ -347,9 +312,7 @@ class SmartmiDaemon:
         if self.mqtt_client:
             prefix = self.config.get("mqtt_prefix", "smartmii")
             for fan_id in self.fans:
-                self.mqtt_client.publish(
-                    f"{prefix}/{fan_id}/status/online", "0", retain=True
-                )
+                self.mqtt_client.publish(f"{prefix}/{fan_id}/status/online", "0", retain=True)
             self.mqtt_client.publish(f"{prefix}/daemon/status", "offline", retain=True)
             self.mqtt_client.disconnect()
             self.mqtt_client.loop_stop()
@@ -376,8 +339,11 @@ class SmartmiDaemon:
             logger.error("Failed to load initial config, exiting")
             sys.exit(1)
 
-        self.connect_mqtt()
+        if not self.init_cloud():
+            logger.error("Cloud session not available, exiting")
+            sys.exit(1)
 
+        self.connect_mqtt()
         time.sleep(1)
 
         self.running = True
@@ -397,16 +363,8 @@ class SmartmiDaemon:
 
 def main():
     parser = argparse.ArgumentParser(description="Smartmii Fan Control Daemon")
-    parser.add_argument(
-        "--configdir",
-        default="/opt/loxberry/config/plugins/smartmii",
-        help="Path to plugin config directory",
-    )
-    parser.add_argument(
-        "--logdir",
-        default="/opt/loxberry/log/plugins/smartmii",
-        help="Path to plugin log directory",
-    )
+    parser.add_argument("--configdir", default="/opt/loxberry/config/plugins/smartmii")
+    parser.add_argument("--logdir", default="/opt/loxberry/log/plugins/smartmii")
     args = parser.parse_args()
 
     config_path = os.path.join(args.configdir, "smartmii.json")
