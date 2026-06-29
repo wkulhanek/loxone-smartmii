@@ -30,7 +30,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'loxone') {
     ];
 
     $xml = '<?xml version="1.0" encoding="utf-8"?>' . "\n";
-    $xml .= '<VirtualInUdp Title="Smartmii Fans (MQTT UDP)" Comment="" Address="" Port="11883">';
+    $xml .= '<VirtualInUdp Title="Smartmii Fans (MQTT UDP)" Comment="" Address="" Port="11883">' . "\n";
     foreach ($config['fans'] ?? [] as $fan) {
         if (!($fan['enabled'] ?? true)) continue;
         $fname = htmlspecialchars($fan['name'] ?? $fan['id']);
@@ -39,15 +39,23 @@ if (isset($_GET['export']) && $_GET['export'] === 'loxone') {
             $title = "$label $fname";
             $check = "MQTT:\\i$prefix/$fid/status/$key=\\i\\v";
             $hi = $analog === 'true' ? $max : 1;
-            $xml .= "\t" . '<VirtualInUdpCmd Title="' . $title . '" Comment="" Address=""'
-                . ' Check="' . $check . '"'
-                . ' Signed="true" Analog="' . $analog . '"'
-                . ' SourceValLow="0" DestValLow="0"'
-                . ' SourceValHigh="' . $hi . '" DestValHigh="' . $hi . '"'
-                . ' DefVal="0" MinVal="' . $min . '" MaxVal="' . $max . '"/>';
+            $xml .= "  <VirtualInUdpCmd\n"
+                . "    Title=\"$title\"\n"
+                . "    Comment=\"\"\n"
+                . "    Address=\"\"\n"
+                . "    Check=\"$check\"\n"
+                . "    Signed=\"true\"\n"
+                . "    Analog=\"$analog\"\n"
+                . "    SourceValLow=\"0\"\n"
+                . "    DestValLow=\"0\"\n"
+                . "    SourceValHigh=\"$hi\"\n"
+                . "    DestValHigh=\"$hi\"\n"
+                . "    DefVal=\"0\"\n"
+                . "    MinVal=\"$min\"\n"
+                . "    MaxVal=\"$max\"/>\n";
         }
     }
-    $xml .= '</VirtualInUdp>';
+    $xml .= '</VirtualInUdp>' . "\n";
 
     header('Content-Type: application/xml; charset=utf-8');
     header('Content-Disposition: attachment; filename="VI_MQTT_UDP_Smartmii.xml"');
