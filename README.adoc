@@ -104,9 +104,6 @@ The Xiaomi Cloud session can expire after an extended period. When this happens,
 Cloud API latency::
 Commands sent via the cloud take 1-2 seconds to reach the fan (compared to instant local control). Status updates are only as current as the last poll interval.
 
-Mode property is a string::
-The `mode` status topic publishes `natural` or `normal` as text, not a numeric value. This requires special handling if you want to use it in Loxone (the XML template excludes it for this reason).
-
 Fan must be registered in Mi Home::
 The fan must be added to your Mi Home app and associated with your Xiaomi account before the plugin can discover or control it.
 
@@ -134,40 +131,25 @@ Topic pattern: `{prefix}/{fan_id}/status/{property}`
 | 1-4
 | Fan speed level
 
-| `mode`
-| String
-| normal / natural
-| Operating mode
-
 | `oscillate`
 | Binary
 | 0 / 1
-| Oscillation on/off
+| Oscillation (horizontal swing) on/off
 
 | `angle`
 | Integer
 | 30 / 60 / 90 / 120
 | Oscillation angle (degrees)
 
-| `delay_off`
+| `mode`
 | Integer
-| 0-480
-| Auto-off timer (minutes), 0 = disabled
+| 0 / 1
+| 0 = natural, 1 = straight wind
 
 | `buzzer`
 | Binary
 | 0 / 1
 | Button sound feedback
-
-| `child_lock`
-| Binary
-| 0 / 1
-| Physical button lock
-
-| `led_brightness`
-| Integer
-| 0-100
-| LED brightness (%)
 
 | `online`
 | Binary
@@ -193,33 +175,21 @@ Topic pattern: `{prefix}/{fan_id}/cmd/{command}`
 | 1-4
 | Clamped to valid range
 
-| `mode`
-| natural / normal
-|
-
 | `oscillate`
 | on / off / 1 / 0
-|
+| Horizontal swing
 
 | `angle`
 | 30 / 60 / 90 / 120
 | Invalid values are rejected
 
-| `delay_off`
-| 0-480
-| Minutes; 0 cancels the timer
+| `mode`
+| straight / natural / 0 / 1
+| 0 = natural, 1 = straight
 
 | `buzzer`
 | on / off / 1 / 0
 |
-
-| `child_lock`
-| on / off / 1 / 0
-|
-
-| `led_brightness`
-| 0-100
-| Clamped to valid range
 |===
 
 === Daemon Status
@@ -268,9 +238,7 @@ The plugin can generate an XML template for importing Virtual Inputs into Loxone
 . Select the downloaded `VI_MQTT_UDP_Smartmii.xml` file
 . A new Virtual Input named "Smartmii Fans (MQTT UDP)" appears with entries for each fan property
 
-The template uses **port 11883** (LoxBerry MQTT Gateway UDP port). Each configured fan gets entries for: power, fan_level, oscillate, angle, delay_off, buzzer, child_lock, led_brightness, and online.
-
-NOTE: The `mode` property is excluded from the XML template because it publishes string values (`natural`/`normal`) which cannot be mapped as analog or digital inputs directly.
+The template uses **port 11883** (LoxBerry MQTT Gateway UDP port). Each configured fan gets entries for: power, fan_level, oscillate, angle, mode, buzzer, and online.
 
 === Using the Virtual Inputs
 
@@ -294,13 +262,10 @@ MIoT property mapping used by the plugin:
 
 | 2 | 1 | power | boolean
 | 2 | 2 | fan_level | integer (1-4)
-| 2 | 3 | mode | boolean (true=natural)
-| 2 | 4 | oscillate | boolean
+| 2 | 3 | oscillate | boolean
 | 2 | 5 | angle | integer (30/60/90/120)
-| 3 | 1 | delay_off | integer (minutes)
+| 2 | 7 | mode | integer (0=natural, 1=straight)
 | 5 | 1 | buzzer | boolean
-| 6 | 1 | child_lock | boolean
-| 7 | 1 | led_brightness | integer (0-100)
 |===
 
 == Uninstall

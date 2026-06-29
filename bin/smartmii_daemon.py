@@ -27,26 +27,20 @@ PIDFILE = "/run/shm/smartmii.pid"
 STATUS_PROPS = [
     (2, 1, "power"),
     (2, 2, "fan_level"),
-    (2, 3, "mode"),
-    (2, 4, "oscillate"),
+    (2, 3, "oscillate"),
     (2, 5, "angle"),
-    (3, 1, "delay_off"),
+    (2, 7, "mode"),
     (5, 1, "buzzer"),
-    (6, 1, "child_lock"),
-    (7, 1, "led_brightness"),
 ]
 
 # command name -> (siid, piid, value_converter)
 COMMAND_MAP = {
     "power":          (2, 1, None),
     "fan_level":      (2, 2, lambda v: max(1, min(4, int(v)))),
-    "mode":           (2, 3, lambda v: v.lower() == "natural"),
-    "oscillate":      (2, 4, None),
+    "oscillate":      (2, 3, None),
     "angle":          (2, 5, lambda v: int(v) if int(v) in (30, 60, 90, 120) else None),
-    "delay_off":      (3, 1, lambda v: max(0, int(v))),
+    "mode":           (2, 7, lambda v: 1 if v.lower() in ("straight", "1") else 0),
     "buzzer":         (5, 1, None),
-    "child_lock":     (6, 1, None),
-    "led_brightness": (7, 1, lambda v: max(0, min(100, int(v)))),
 }
 
 STATUS_NAMES = [name for _, _, name in STATUS_PROPS]
@@ -60,8 +54,6 @@ def parse_bool(value):
 def format_status_value(name, value):
     """Convert cloud API values to MQTT-friendly strings."""
     if isinstance(value, bool):
-        if name == "mode":
-            return "natural" if value else "normal"
         return "1" if value else "0"
     return str(value)
 
@@ -252,8 +244,6 @@ class SmartmiDaemon:
                     value = current != "1"
                 else:
                     value = parse_bool(payload)
-            elif command in ("buzzer", "child_lock"):
-                value = 1 if parse_bool(payload) else 0
             else:
                 value = parse_bool(payload)
 

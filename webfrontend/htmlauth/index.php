@@ -20,14 +20,12 @@ if (isset($_GET['export']) && $_GET['export'] === 'loxone') {
 
     $prefix = htmlspecialchars($config['mqtt_prefix'] ?? 'smartmii');
     $props = [
-        ['power',          'Power',          'false', 0, 1],
-        ['fan_level',      'Fan Level',      'true',  0, 4],
+        ['power',            'Power',            'false', 0, 1],
+        ['fan_level',        'Fan Level',        'true',  0, 4],
         ['oscillate',      'Oscillate',      'false', 0, 1],
         ['angle',          'Angle',          'true',  0, 120],
-        ['delay_off',      'Delay Off',      'true',  0, 480],
+        ['mode',           'Mode',           'true',  0, 1],
         ['buzzer',         'Buzzer',         'false', 0, 1],
-        ['child_lock',     'Child Lock',     'false', 0, 1],
-        ['led_brightness', 'LED Brightness', 'true',  0, 100],
         ['online',         'Online',         'false', 0, 1],
     ];
 
@@ -211,8 +209,8 @@ if (file_exists($configfile)) {
 $daemon_running = daemon_is_running($pidfile);
 $session_exists = file_exists($sessionfile);
 
-$statusProps = ['power', 'fan_level', 'mode', 'oscillate', 'angle', 'delay_off', 'buzzer', 'child_lock', 'led_brightness', 'online'];
-$cmdProps = ['power', 'fan_level', 'mode', 'oscillate', 'angle', 'delay_off', 'buzzer', 'child_lock', 'led_brightness'];
+$statusProps = ['power', 'fan_level', 'oscillate', 'angle', 'mode', 'buzzer', 'online'];
+$cmdProps = ['power', 'fan_level', 'oscillate', 'angle', 'mode', 'buzzer'];
 
 $template_title = $L['BASIC.PLUGIN_TITLE'];
 $helplink = "https://github.com/wkulhane/loxone-smartmii";
