@@ -42,6 +42,7 @@ class XiaomiCloudClient:
     # --- Session persistence ---
 
     def save_session(self, path):
+        logger.debug("Saving session to %s", path)
         with open(path, "w") as f:
             json.dump({
                 "userId": self._user_id,
@@ -50,17 +51,22 @@ class XiaomiCloudClient:
             }, f)
 
     def load_session(self, path):
+        logger.debug("Loading session from %s", path)
         if not os.path.exists(path):
+            logger.debug("Session file not found: %s", path)
             return False
         with open(path) as f:
             data = json.load(f)
         self._user_id = data.get("userId")
         self._service_token = data.get("serviceToken")
         self._ssecurity = data.get("ssecurity")
-        return all([self._user_id, self._service_token, self._ssecurity])
+        ok = all([self._user_id, self._service_token, self._ssecurity])
+        logger.debug("Session loaded: valid=%s, userId=%s", ok, self._user_id)
+        return ok
 
     def save_login_state(self, path):
         """Save full client state (including HTTP session cookies) for multi-step login."""
+        logger.debug("Saving login state to %s", path)
         with open(path, "wb") as f:
             pickle.dump({
                 "server": self.server,
@@ -81,7 +87,9 @@ class XiaomiCloudClient:
 
     def load_login_state(self, path):
         """Restore client state from a previous login step."""
+        logger.debug("Loading login state from %s", path)
         if not os.path.exists(path):
+            logger.debug("Login state file not found: %s", path)
             return False
         with open(path, "rb") as f:
             state = pickle.load(f)
@@ -110,51 +118,68 @@ class XiaomiCloudClient:
 
     def is_session_valid(self):
         if not self._ssecurity or not self._service_token:
+            logger.debug("Session invalid: missing credentials")
             return False
         url = self._api_url() + "/v2/user/get_device_cnt"
         params = {"data": '{"fetch_own": true, "fetch_share": true}'}
         result = self._api_call(url, params)
-        return result is not None and "result" in result
+        valid = result is not None and "result" in result
+        logger.debug("Session validation: %s", "valid" if valid else "invalid")
+        return valid
 
     # --- Login flow ---
 
     def login(self, username, password):
+        logger.info("Starting login for user %s (server: %s)", username, self.server)
         self._session.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="mi.com")
         self._session.cookies.set("sdkVersion", "accountsdk-18.8.15", domain="xiaomi.com")
         self._session.cookies.set("deviceId", self._device_id, domain="mi.com")
         self._session.cookies.set("deviceId", self._device_id, domain="xiaomi.com")
 
         if not self._login_step1(username):
+            logger.error("Login step 1 failed for user %s", username)
             return {"status": "error", "message": "Invalid username"}
 
         result = self._login_step2(username, password)
         if result.get("status") == "captcha":
+            logger.info("Login requires captcha")
             return result
         if result.get("status") == "2fa":
+            logger.info("Login requires 2FA")
             return result
         if result.get("status") != "ok":
+            logger.error("Login step 2 failed: %s", result.get("message", "unknown"))
             return result
 
         if not self._service_token and self._location:
             if not self._login_step3():
+                logger.error("Login step 3 failed: could not get service token")
                 return {"status": "error", "message": "Failed to get service token"}
 
+        logger.info("Login successful for user %s", username)
         return {"status": "ok"}
 
     def submit_captcha(self, captcha_code):
         """Continue login after captcha. Call after login() returns status=captcha."""
+        logger.info("Submitting captcha")
         result = self._login_step2_retry(captcha_code)
         if result.get("status") != "ok":
+            logger.error("Captcha submission failed: %s", result.get("message", "unknown"))
             return result
         if not self._service_token and self._location:
             if not self._login_step3():
+                logger.error("Post-captcha step 3 failed")
                 return {"status": "error", "message": "Failed to get service token"}
+        logger.info("Captcha accepted, login complete")
         return {"status": "ok"}
 
     def submit_2fa(self, code):
         """Continue login after 2FA. Call after login() returns status=2fa."""
+        logger.info("Submitting 2FA code")
         if not self._do_2fa_verify(code):
+            logger.error("2FA verification failed")
             return {"status": "error", "message": "2FA verification failed"}
+        logger.info("2FA accepted, login complete")
         return {"status": "ok"}
 
     # --- MIoT API ---
@@ -162,40 +187,51 @@ class XiaomiCloudClient:
     def get_properties(self, did, props):
         """Get device properties. props = list of (siid, piid) tuples.
         Returns dict of {(siid, piid): value} for successful reads."""
+        logger.debug("get_properties did=%s props=%s", did, props)
         url = self._api_url() + "/miotspec/prop/get"
         params = {"data": json.dumps({"params": [
             {"did": str(did), "siid": s, "piid": p} for s, p in props
         ]})}
         result = self._api_call(url, params)
         if not result or "result" not in result:
+            logger.error("get_properties failed for did=%s", did)
             return None
         values = {}
         for item in result["result"]:
             if item.get("code") == 0:
                 values[(item["siid"], item["piid"])] = item["value"]
+        logger.debug("get_properties did=%s result=%s", did, values)
         return values
 
     def set_property(self, did, siid, piid, value):
         """Set a single device property. Returns True on success."""
+        logger.debug("set_property did=%s siid=%d piid=%d value=%s", did, siid, piid, value)
         url = self._api_url() + "/miotspec/prop/set"
         params = {"data": json.dumps({"params": [
             {"did": str(did), "siid": siid, "piid": piid, "value": value}
         ]})}
         result = self._api_call(url, params)
         if not result or "result" not in result:
+            logger.error("set_property failed for did=%s siid=%d piid=%d", did, siid, piid)
             return False
-        return result["result"][0].get("code") == 0
+        ok = result["result"][0].get("code") == 0
+        logger.debug("set_property did=%s siid=%d piid=%d success=%s", did, siid, piid, ok)
+        return ok
 
     def get_devices(self):
         """List all devices from the cloud account. Returns list of device dicts."""
+        logger.debug("Discovering devices (server: %s)", self.server)
         url = self._api_url() + "/v2/homeroom/gethome"
         params = {"data": '{"fg": true, "fetch_share": true, "fetch_share_dev": true, "limit": 300, "app_ver": 7}'}
         homes_result = self._api_call(url, params)
         if not homes_result or "result" not in homes_result:
+            logger.error("Device discovery failed: could not get homes")
             return None
 
+        homes = homes_result["result"].get("homelist", [])
+        logger.debug("Found %d homes", len(homes))
         devices = []
-        for home in homes_result["result"].get("homelist", []):
+        for home in homes:
             url = self._api_url() + "/v2/home/home_device_list"
             params = {"data": json.dumps({
                 "home_owner": self._user_id,
@@ -215,6 +251,7 @@ class XiaomiCloudClient:
                         "mac": d.get("mac", ""),
                         "token": d.get("token", ""),
                     })
+        logger.info("Device discovery complete: %d devices found", len(devices))
         return devices
 
     # --- Internal: API call with RC4 encryption ---
@@ -224,6 +261,7 @@ class XiaomiCloudClient:
         return "https://" + ("" if c == "cn" else (c + ".")) + "api.io.mi.com/app"
 
     def _api_call(self, url, params):
+        logger.debug("API request: POST %s", url)
         headers = {
             "Accept-Encoding": "identity",
             "User-Agent": self._agent,
@@ -248,35 +286,43 @@ class XiaomiCloudClient:
         try:
             response = self._session.post(url, headers=headers, cookies=cookies, params=fields, timeout=10)
         except requests.RequestException as e:
-            logger.error("API call failed: %s", e)
+            logger.error("API call failed: POST %s — %s", url, e)
             return None
         if response.status_code == 200:
             decoded = self._decrypt_rc4(self._signed_nonce(fields["_nonce"]), response.text)
-            return json.loads(decoded)
-        logger.error("API returned HTTP %d", response.status_code)
+            result = json.loads(decoded)
+            logger.debug("API response: POST %s — %s", url, result)
+            return result
+        logger.error("API returned HTTP %d for POST %s", response.status_code, url)
         return None
 
     # --- Internal: login steps ---
 
     def _login_step1(self, username):
+        logger.debug("Login step 1: serviceLogin for %s", username)
         url = "https://account.xiaomi.com/pass/serviceLogin?sid=xiaomiio&_json=true"
         headers = {"User-Agent": self._agent, "Content-Type": "application/x-www-form-urlencoded"}
         cookies = {"userId": username}
         response = self._session.get(url, headers=headers, cookies=cookies)
         if response.status_code != 200:
+            logger.debug("Login step 1: HTTP %d", response.status_code)
             return False
         data = self._to_json(response.text)
         if "_sign" in data:
             self._sign = data["_sign"]
+            logger.debug("Login step 1: got _sign")
             return True
         if "ssecurity" in data:
             self._ssecurity = data["ssecurity"]
             self._user_id = data["userId"]
             self._location = data.get("location")
+            logger.debug("Login step 1: got ssecurity (cached session)")
             return True
+        logger.debug("Login step 1: unexpected response keys: %s", list(data.keys()))
         return False
 
     def _login_step2(self, username, password):
+        logger.debug("Login step 2: serviceLoginAuth2 for %s", username)
         url = "https://account.xiaomi.com/pass/serviceLoginAuth2"
         headers = {"User-Agent": self._agent, "Content-Type": "application/x-www-form-urlencoded"}
         self._login_fields = {
@@ -323,6 +369,7 @@ class XiaomiCloudClient:
         return {"status": "error", "message": "Login failed"}
 
     def _login_step2_retry(self, captcha_code):
+        logger.debug("Login step 2 retry with captcha")
         self._login_fields["captCode"] = captcha_code
         response = self._session.post(
             self._login_url, headers=self._login_headers,
@@ -349,11 +396,14 @@ class XiaomiCloudClient:
         return {"status": "error", "message": "Login failed after captcha"}
 
     def _login_step3(self):
+        logger.debug("Login step 3: fetching service token")
         headers = {"User-Agent": self._agent, "Content-Type": "application/x-www-form-urlencoded"}
         response = self._session.get(self._location, headers=headers)
         if response.status_code == 200:
             self._service_token = response.cookies.get("serviceToken")
+            logger.debug("Login step 3: service token %s", "obtained" if self._service_token else "missing")
             return bool(self._service_token)
+        logger.debug("Login step 3: HTTP %d", response.status_code)
         return False
 
     # --- Internal: 2FA flow ---
@@ -361,6 +411,7 @@ class XiaomiCloudClient:
     def _do_2fa_start(self):
         import re
         from urllib.parse import parse_qs, urlparse
+        logger.debug("2FA: starting email verification flow")
         headers = {"User-Agent": self._agent, "Content-Type": "application/x-www-form-urlencoded"}
         self._session.get(self._2fa_notification_url, headers=headers)
         self._2fa_context = parse_qs(urlparse(self._2fa_notification_url).query)["context"][0]
@@ -377,6 +428,7 @@ class XiaomiCloudClient:
 
     def _do_2fa_verify(self, code):
         import re
+        logger.debug("2FA: verifying email code")
         headers = {"User-Agent": self._agent, "Content-Type": "application/x-www-form-urlencoded"}
         r = self._session.post("https://account.xiaomi.com/identity/auth/verifyEmail", params={
             "_flag": "8", "_json": "true", "sid": "xiaomiio",

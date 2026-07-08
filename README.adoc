@@ -20,6 +20,7 @@ The plugin communicates with the fans through the Xiaomi Cloud API, publishes de
 * Retained MQTT messages for reliable state synchronization
 * Downloadable Loxone Config XML template for quick setup
 * Hot-reload of configuration (no daemon restart needed)
+* Integrated LoxBerry logging with configurable log levels
 
 == Prerequisites
 
@@ -249,6 +250,55 @@ After import, drag the Virtual Input entries you need into your Loxone project:
 * **Online** (0/1) -- use for monitoring and alerts
 
 To send commands to the fans, create Virtual Outputs manually in Loxone Config that publish to the `{prefix}/{fan_id}/cmd/{command}` MQTT topics.
+
+== Logging
+
+The plugin integrates with LoxBerry's logging system. The log level can be configured in **LoxBerry > System > Plugin Management** (dropdown next to the Smartmii plugin).
+
+=== Log Levels
+
+[cols="1,1,3"]
+|===
+| Level | Name | What is logged
+
+| 7
+| Debug
+| Every cloud API request/response, MQTT messages, poll results, property values
+
+| 6
+| Info
+| Login attempts, device discovery, daemon start/stop, commands sent
+
+| 5
+| OK
+| Same as Info
+
+| 4
+| Warning
+| MQTT disconnects, poll failures, unknown commands
+
+| 3
+| Error
+| Cloud API failures, login errors, config errors
+
+| 0
+| Off
+| Logging disabled
+|===
+
+=== Log Files
+
+All components write to the same log file at `LBPLOGDIR/smartmii.log` (typically `/opt/loxberry/log/plugins/smartmii/smartmii.log`). The file rotates at 1 MB with 3 backups.
+
+Web UI actions (login, config saves, daemon control) are additionally registered in LoxBerry's Log Manager and visible under **LoxBerry > System > Log Manager**.
+
+=== Development / Testing
+
+When running outside of LoxBerry, use the `--loglevel` flag:
+
+----
+python3 bin/smartmii_daemon.py --configdir ./config --logdir ./log --loglevel DEBUG
+----
 
 == Supported Device
 

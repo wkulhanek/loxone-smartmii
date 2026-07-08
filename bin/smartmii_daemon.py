@@ -11,6 +11,7 @@ import logging
 import logging.handlers
 import os
 import signal
+import subprocess
 import sys
 import time
 
@@ -22,6 +23,31 @@ from xiaomi_cloud import XiaomiCloudClient
 logger = logging.getLogger("smartmii")
 
 PIDFILE = "/run/shm/smartmii.pid"
+
+# LoxBerry syslog-style levels (0-7) → Python logging levels
+LB_LOGLEVEL_MAP = {
+    0: logging.CRITICAL + 10,  # off/emergency — suppress everything
+    1: logging.CRITICAL,       # alert
+    2: logging.CRITICAL,       # critical
+    3: logging.ERROR,          # error
+    4: logging.WARNING,        # warning
+    5: logging.INFO,           # ok
+    6: logging.INFO,           # info
+    7: logging.DEBUG,          # debug
+}
+
+
+def get_loxberry_loglevel():
+    """Read plugin loglevel from LoxBerry's plugin database via Perl."""
+    try:
+        result = subprocess.run(
+            ["perl", "-e", "use LoxBerry::System; print LoxBerry::System::pluginloglevel();"],
+            capture_output=True, text=True, timeout=5,
+        )
+        level = int(result.stdout.strip())
+        return LB_LOGLEVEL_MAP.get(level, logging.INFO)
+    except Exception:
+        return None
 
 # zhimi.fan.za5 MIoT SIID/PIID mapping — cloud-available properties only
 STATUS_PROPS = [
@@ -79,9 +105,10 @@ def get_mqtt_credentials():
 
 
 class SmartmiDaemon:
-    def __init__(self, config_path, log_dir):
+    def __init__(self, config_path, log_dir, loglevel=None):
         self.config_path = config_path
         self.log_dir = log_dir
+        self.cli_loglevel = loglevel
         self.config = {}
         self.fans = {}
         self.cloud = None
@@ -96,11 +123,21 @@ class SmartmiDaemon:
             log_file, maxBytes=1_000_000, backupCount=3
         )
         handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
         )
-        logger.addHandler(handler)
-        logger.addHandler(logging.StreamHandler())
-        logger.setLevel(logging.INFO)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.addHandler(logging.StreamHandler())
+
+        lb_level = get_loxberry_loglevel()
+        if lb_level is not None:
+            level = lb_level
+        elif self.cli_loglevel is not None:
+            level = self.cli_loglevel
+        else:
+            level = logging.INFO
+        root.setLevel(level)
+        logger.info("Log level: %s", logging.getLevelName(level))
 
     def init_cloud(self):
         server = self.config.get("xiaomi_server", "de")
@@ -117,6 +154,7 @@ class SmartmiDaemon:
         return True
 
     def load_and_apply_config(self):
+        logger.debug("Loading config from %s", self.config_path)
         try:
             with open(self.config_path) as f:
                 new_config = json.load(f)
@@ -187,8 +225,9 @@ class SmartmiDaemon:
 
     def _on_mqtt_connect(self, client, userdata, flags, rc):
         if rc == 0:
-            logger.info("Connected to MQTT broker")
             prefix = self.config.get("mqtt_prefix", "smartmii")
+            logger.info("Connected to MQTT broker")
+            logger.debug("Subscribing to %s/+/cmd/#", prefix)
             client.subscribe(f"{prefix}/+/cmd/#")
             client.publish(f"{prefix}/daemon/status", "online", retain=True)
         else:
@@ -202,6 +241,7 @@ class SmartmiDaemon:
         prefix = self.config.get("mqtt_prefix", "smartmii")
         topic = msg.topic
         payload = msg.payload.decode("utf-8", errors="replace").strip()
+        logger.debug("MQTT message: %s = %s", topic, payload)
 
         if not topic.startswith(prefix + "/"):
             return
@@ -242,11 +282,13 @@ class SmartmiDaemon:
                 if payload.lower() == "toggle":
                     current = fan_entry.get("last_status", {}).get("power", "0")
                     value = current != "1"
+                    logger.debug("Toggle power: current=%s, new=%s", current, value)
                 else:
                     value = parse_bool(payload)
             else:
                 value = parse_bool(payload)
 
+            logger.debug("Sending %s/%s: did=%s siid=%d piid=%d value=%s", fan_id, command, did, siid, piid, value)
             success = self.cloud.set_property(did, siid, piid, value)
             if success:
                 logger.info("Command %s/%s succeeded", fan_id, command)
@@ -263,6 +305,7 @@ class SmartmiDaemon:
         base = f"{prefix}/{fan_id}/status"
         did = fan_entry["config"]["did"]
 
+        logger.debug("Polling fan %s (DID: %s)", fan_id, did)
         prop_keys = [(s, p) for s, p, _ in STATUS_PROPS]
         values = self.cloud.get_properties(did, prop_keys)
 
@@ -281,6 +324,8 @@ class SmartmiDaemon:
                 mqtt_val = format_status_value(name, values[(siid, piid)])
                 fan_entry["last_status"][name] = mqtt_val
                 self.mqtt_client.publish(f"{base}/{name}", mqtt_val, retain=True)
+
+        logger.debug("Poll %s: %s", fan_id, fan_entry["last_status"])
 
     def poll_all_fans(self):
         for fan_id, fan_entry in list(self.fans.items()):
@@ -355,10 +400,12 @@ def main():
     parser = argparse.ArgumentParser(description="Smartmii Fan Control Daemon")
     parser.add_argument("--configdir", default="/opt/loxberry/config/plugins/smartmii")
     parser.add_argument("--logdir", default="/opt/loxberry/log/plugins/smartmii")
+    parser.add_argument("--loglevel", default=None, help="Override log level (DEBUG, INFO, WARNING, ERROR)")
     args = parser.parse_args()
 
+    loglevel = getattr(logging, args.loglevel.upper(), None) if args.loglevel else None
     config_path = os.path.join(args.configdir, "smartmii.json")
-    daemon = SmartmiDaemon(config_path, args.logdir)
+    daemon = SmartmiDaemon(config_path, args.logdir, loglevel=loglevel)
     daemon.run()
 
 

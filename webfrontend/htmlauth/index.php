@@ -1,17 +1,21 @@
 <?php
 require_once "loxberry_system.php";
 require_once "loxberry_web.php";
+require_once "loxberry_log.php";
 
 $L = LBSystem::readlanguage("language.ini");
 
 $pluginconfigdir = LBPCONFIGDIR;
 $pluginbindir = LBPBINDIR;
 $plugindatadir = LBPDATADIR;
+$pluginlogdir = LBPLOGDIR;
 $configfile = "$pluginconfigdir/smartmii.json";
 $sessionfile = "$pluginconfigdir/xiaomi_session.json";
 $pidfile = "/run/shm/smartmii.pid";
 $python = "$plugindatadir/venv/bin/python3";
 $cloud_login = "$pluginbindir/cloud_login.py";
+
+$log = LBLog::newLog(["name" => "WebUI", "stderr" => 1, "addtime" => 1, "append" => 1]);
 
 // --- Loxone XML export (before any HTML output) ---
 if (isset($_GET['export']) && $_GET['export'] === 'loxone') {
@@ -70,8 +74,10 @@ function daemon_is_running($pidfile) {
 }
 
 function cloud_command($python, $cloud_login, $input) {
+    global $pluginlogdir;
     $desc = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-    $proc = proc_open("$python $cloud_login", $desc, $pipes);
+    $env = array_merge($_ENV, ['LBPLOGDIR' => $pluginlogdir]);
+    $proc = proc_open("$python $cloud_login", $desc, $pipes, null, $env);
     if (!is_resource($proc)) return null;
     fwrite($pipes[0], json_encode($input) . "\n");
     fclose($pipes[0]);
@@ -86,10 +92,13 @@ function cloud_command($python, $cloud_login, $input) {
 if (isset($_POST['ajax'])) {
     header('Content-Type: application/json');
     $action = $_POST['ajax'];
+    LOGSTART("AJAX: $action");
 
     if ($action === 'save_config') {
         $config = json_decode($_POST['config'], true);
         if ($config === null) {
+            LOGERR("Config save failed: invalid JSON");
+            LOGEND("");
             echo json_encode(['success' => false, 'message' => $L['BASIC.MSG_SAVE_ERROR']]);
             exit;
         }
@@ -98,11 +107,18 @@ if (isset($_POST['ajax'])) {
         if (empty($config['mqtt_prefix'])) $config['mqtt_prefix'] = 'smartmii';
         if (!isset($config['fans'])) $config['fans'] = [];
         $result = file_put_contents($configfile, json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        if ($result !== false) {
+            LOGINF("Config saved (" . count($config['fans']) . " fans, prefix: " . $config['mqtt_prefix'] . ")");
+        } else {
+            LOGERR("Config save failed: write error");
+        }
+        LOGEND("");
         echo json_encode(['success' => $result !== false, 'message' => $result !== false ? $L['BASIC.MSG_SAVED'] : $L['BASIC.MSG_SAVE_ERROR']]);
         exit;
     }
 
     if ($action === 'cloud_login') {
+        LOGINF("Cloud login for " . ($_POST['username'] ?? '') . " (server: " . ($_POST['server'] ?? 'de') . ")");
         $result = cloud_command($python, $cloud_login, [
             'action' => 'login',
             'username' => $_POST['username'] ?? '',
@@ -110,36 +126,54 @@ if (isset($_POST['ajax'])) {
             'server' => $_POST['server'] ?? 'de',
             'session_file' => $sessionfile,
         ]);
+        if (!$result) { LOGERR("Cloud login script failed"); }
+        else { LOGDEB("Cloud login result: " . ($result['status'] ?? 'null')); }
+        LOGEND("");
         echo json_encode($result ?: ['status' => 'error', 'message' => 'Login script failed']);
         exit;
     }
 
     if ($action === 'cloud_captcha') {
+        LOGINF("Captcha submission");
         $result = cloud_command($python, $cloud_login, [
             'action' => 'captcha',
             'code' => $_POST['code'] ?? '',
             'session_file' => $sessionfile,
         ]);
+        if (!$result) { LOGERR("Captcha script failed"); }
+        else { LOGDEB("Captcha result: " . ($result['status'] ?? 'null')); }
+        LOGEND("");
         echo json_encode($result ?: ['status' => 'error', 'message' => 'Captcha submission failed']);
         exit;
     }
 
     if ($action === 'cloud_2fa') {
+        LOGINF("2FA code submission");
         $result = cloud_command($python, $cloud_login, [
             'action' => '2fa',
             'code' => $_POST['code'] ?? '',
             'session_file' => $sessionfile,
         ]);
+        if (!$result) { LOGERR("2FA script failed"); }
+        else { LOGDEB("2FA result: " . ($result['status'] ?? 'null')); }
+        LOGEND("");
         echo json_encode($result ?: ['status' => 'error', 'message' => '2FA submission failed']);
         exit;
     }
 
     if ($action === 'cloud_discover') {
+        LOGINF("Device discovery (server: " . ($_POST['server'] ?? 'de') . ")");
         $result = cloud_command($python, $cloud_login, [
             'action' => 'discover',
             'session_file' => $sessionfile,
             'server' => $_POST['server'] ?? 'de',
         ]);
+        if ($result && $result['status'] === 'ok') {
+            LOGINF("Discovery: " . count($result['devices'] ?? []) . " devices found");
+        } else {
+            LOGERR("Discovery failed: " . ($result['message'] ?? 'unknown'));
+        }
+        LOGEND("");
         echo json_encode($result ?: ['status' => 'error', 'message' => 'Discovery failed']);
         exit;
     }
@@ -147,9 +181,12 @@ if (isset($_POST['ajax'])) {
     if ($action === 'test_connection') {
         $did = $_POST['did'] ?? '';
         if (!preg_match('/^\d+$/', $did)) {
+            LOGERR("Connection test: invalid DID '$did'");
+            LOGEND("");
             echo json_encode(['success' => false, 'message' => $L['BASIC.MSG_INVALID_DID']]);
             exit;
         }
+        LOGINF("Connection test for DID $did");
         $result = cloud_command($python, $cloud_login, [
             'action' => 'test',
             'session_file' => $sessionfile,
@@ -157,52 +194,70 @@ if (isset($_POST['ajax'])) {
             'did' => $did,
         ]);
         if ($result && $result['status'] === 'ok') {
+            LOGINF("Test OK: " . $result['message']);
             echo json_encode(['success' => true, 'message' => $result['message']]);
         } else {
+            LOGERR("Test failed: " . ($result['message'] ?? $L['BASIC.MSG_TEST_FAIL']));
             echo json_encode(['success' => false, 'message' => $result['message'] ?? $L['BASIC.MSG_TEST_FAIL']]);
         }
+        LOGEND("");
         exit;
     }
 
     if ($action === 'cloud_validate') {
+        LOGDEB("Session validation");
         $result = cloud_command($python, $cloud_login, [
             'action' => 'validate',
             'session_file' => $sessionfile,
             'server' => $_POST['server'] ?? 'de',
         ]);
+        LOGDEB("Session valid: " . json_encode($result['valid'] ?? false));
+        LOGEND("");
         echo json_encode($result ?: ['status' => 'error', 'valid' => false]);
         exit;
     }
 
     if ($action === 'daemon_status') {
+        LOGDEB("Daemon status check");
+        LOGEND("");
         echo json_encode(['running' => daemon_is_running($pidfile)]);
         exit;
     }
 
     if ($action === 'daemon_restart') {
+        LOGINF("Daemon restart requested");
         if (daemon_is_running($pidfile)) {
             $pid = trim(file_get_contents($pidfile));
             exec("kill $pid 2>/dev/null");
+            LOGINF("Stopped old daemon (PID $pid)");
             sleep(1);
         }
         $daemon = "$pluginbindir/smartmii_daemon.py";
         $logdir = LBPLOGDIR;
         exec("$python $daemon --configdir $pluginconfigdir --logdir $logdir > /dev/null 2>&1 &");
         sleep(2);
-        echo json_encode(['success' => true, 'running' => daemon_is_running($pidfile), 'message' => $L['BASIC.MSG_DAEMON_RESTARTED']]);
+        $running = daemon_is_running($pidfile);
+        if ($running) { LOGINF("Daemon started"); } else { LOGERR("Daemon failed to start"); }
+        LOGEND("");
+        echo json_encode(['success' => true, 'running' => $running, 'message' => $L['BASIC.MSG_DAEMON_RESTARTED']]);
         exit;
     }
 
     if ($action === 'daemon_stop') {
+        LOGINF("Daemon stop requested");
         if (daemon_is_running($pidfile)) {
             $pid = trim(file_get_contents($pidfile));
             exec("kill $pid 2>/dev/null");
+            LOGINF("Daemon stopped (PID $pid)");
             sleep(1);
         }
+        LOGEND("");
         echo json_encode(['success' => true, 'message' => $L['BASIC.MSG_DAEMON_STOPPED']]);
         exit;
     }
 
+    LOGERR("Unknown AJAX action: $action");
+    LOGEND("");
     echo json_encode(['success' => false, 'message' => 'Unknown action']);
     exit;
 }
