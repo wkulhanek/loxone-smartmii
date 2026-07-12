@@ -208,7 +208,7 @@ class SmartmiDaemon:
 
     def connect_mqtt(self):
         creds = get_mqtt_credentials()
-        self.mqtt_client = mqtt.Client(client_id="smartmii-daemon")
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="smartmii-daemon")
         if creds["user"]:
             self.mqtt_client.username_pw_set(creds["user"], creds["pass"])
 
@@ -223,19 +223,19 @@ class SmartmiDaemon:
         self.mqtt_client.connect(creds["host"], creds["port"], keepalive=60)
         self.mqtt_client.loop_start()
 
-    def _on_mqtt_connect(self, client, userdata, flags, rc):
-        if rc == 0:
+    def _on_mqtt_connect(self, client, userdata, flags, reason_code, properties):
+        if reason_code == 0:
             prefix = self.config.get("mqtt_prefix", "smartmii")
             logger.info("Connected to MQTT broker")
             logger.debug("Subscribing to %s/+/cmd/#", prefix)
             client.subscribe(f"{prefix}/+/cmd/#")
             client.publish(f"{prefix}/daemon/status", "online", retain=True)
         else:
-            logger.error("MQTT connection failed with code %d", rc)
+            logger.error("MQTT connection failed: %s", reason_code)
 
-    def _on_mqtt_disconnect(self, client, userdata, rc):
-        if rc != 0:
-            logger.warning("Unexpected MQTT disconnect (rc=%d), will auto-reconnect", rc)
+    def _on_mqtt_disconnect(self, client, userdata, flags, reason_code, properties):
+        if reason_code != 0:
+            logger.warning("Unexpected MQTT disconnect: %s", reason_code)
 
     def _on_mqtt_message(self, client, userdata, msg):
         prefix = self.config.get("mqtt_prefix", "smartmii")
@@ -257,7 +257,7 @@ class SmartmiDaemon:
             logger.warning("Command for unknown fan: %s", fan_id)
             return
 
-        logger.info("Command: %s/%s = %s", fan_id, command, payload)
+        logger.info("Command: %s/%s = %r", fan_id, command, payload)
         self._execute_command(fan_id, command, payload)
 
     def _execute_command(self, fan_id, command, payload):

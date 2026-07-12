@@ -12,10 +12,17 @@ echo "<INFO> Plugin folder is: $PDIR"
 echo "<INFO> Plugin version is: $PVERSION"
 
 PCONFIG=$LBHOMEDIR/config/plugins/$PDIR
+BACKUPDIR="/tmp/${PTEMPDIR}_upgrade"
 
-if [ ! -f "$PCONFIG/smartmii.json" ]; then
-    echo "<INFO> Creating default configuration..."
-    cp $PTEMPDIR/config/smartmii.json $PCONFIG/smartmii.json
+# Restore config from preupgrade.sh backup
+if [ -d "$BACKUPDIR/config" ]; then
+    echo "<INFO> Restoring config from upgrade backup..."
+    cp -v -r "$BACKUPDIR/config/"* "$PCONFIG/" 2>/dev/null
+    rm -rf "$BACKUPDIR"
+    echo "<OK> Config restored from backup"
+elif [ ! -f "$PCONFIG/smartmii.json" ]; then
+    echo "<INFO> Fresh install, creating default configuration..."
+    cp "$PTEMPDIR/config/smartmii.json" "$PCONFIG/smartmii.json"
 else
     echo "<INFO> Configuration already exists, keeping it"
 fi

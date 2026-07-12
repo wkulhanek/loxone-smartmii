@@ -20,12 +20,13 @@ if [ -f "$PIDFILE" ]; then
 fi
 
 if [ -x "$DAEMON" ]; then
+    # Ensure log directory is writable by loxberry user
+    chown -R loxberry:loxberry "$LOGDIR" 2>/dev/null
     logger "smartmii: Starting daemon"
-    "$PYTHON" "$DAEMON" \
-        --configdir "$CONFIGDIR" \
-        --logdir "$LOGDIR" &
-    echo $! > "$PIDFILE"
-    logger "smartmii: Daemon started (PID $!)"
+    su - loxberry -s /bin/bash -c \
+        "\"$PYTHON\" \"$DAEMON\" --configdir \"$CONFIGDIR\" --logdir \"$LOGDIR\" &
+         echo \$! > \"$PIDFILE\""
+    logger "smartmii: Daemon started"
 else
     logger "smartmii: Daemon script not found or not executable: $DAEMON"
 fi
