@@ -31,16 +31,33 @@ The plugin communicates with the fans through the Xiaomi Cloud API, publishes de
 
 == Installation
 
+=== From GitHub Release (recommended)
+
+. Go to the https://github.com/wkulhanek/loxone-smartmii/releases[Releases page]
+. Download the latest `smartmii-v*.zip` file
+. Open your LoxBerry web interface and navigate to **Plugin Management**
+. Click **Add Plugin**, select the downloaded ZIP, and click **Install**
+
+=== From Repository URL
+
 . Open your LoxBerry web interface
 . Navigate to **Plugin Management**
 . Click **Add Plugin** and enter the GitHub repository URL:
 +
 ----
-https://github.com/wkulhane/loxone-smartmii
+https://github.com/wkulhanek/loxone-smartmii
 ----
 . Click **Install**
 
 The installer automatically creates a Python virtual environment and installs the required dependencies (`paho-mqtt`, `requests`, `pycryptodome`).
+
+=== Upgrades
+
+Plugin upgrades preserve your fan configuration and cloud session automatically. The plugin uses a `preupgrade.sh` script to back up your config before the upgrade and restores it afterward.
+
+=== Automatic Updates
+
+The plugin supports LoxBerry's automatic update mechanism. When enabled in **Plugin Management**, LoxBerry checks for new releases on GitHub and offers to install them.
 
 == Configuration
 
