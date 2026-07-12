@@ -13,6 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
 
       - name: Extract version from tag
         id: version
@@ -31,24 +34,20 @@ jobs:
           zip -r "smartmii-${{ github.ref_name }}.zip" . \
             -x '.git/*' '.github/*' '.gitignore' 'UPDATES.md' 'bin/__pycache__/*'
 
-      - name: Update release.cfg
+      - name: Update release.cfg and commit
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          cat > release.cfg << 'RCFG'
-          [AUTOUPDATE]
-          VERSION=${{ steps.version.outputs.version }}
-          ARCHIVEURL=https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/smartmii-${{ github.ref_name }}.zip
-          INFOURL=https://github.com/${{ github.repository }}/releases
-          RCFG
+          printf '[AUTOUPDATE]\nVERSION=%s\nARCHIVEURL=https://github.com/%s/releases/download/%s/smartmii-%s.zip\nINFOURL=https://github.com/%s/releases\n' \
+            "$VERSION" "$REPO" "$TAG" "$TAG" "$REPO" > release.cfg
           cp release.cfg prerelease.cfg
-
-      - name: Commit updated release.cfg
-        run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout main
           git add release.cfg prerelease.cfg
           git diff --cached --quiet && exit 0
-          git commit -m "Update release.cfg for ${{ github.ref_name }}"
+          git commit -m "Update release.cfg for $TAG"
           git push origin main
 
       - name: Create GitHub Release
