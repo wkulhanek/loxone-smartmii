@@ -27,7 +27,7 @@ from xiaomi_cloud import XiaomiCloudClient
 
 logger = logging.getLogger("smartmii")
 
-STATE_FILE = os.path.join(tempfile.gettempdir(), "smartmii_login_state.pkl")
+STATE_FILE = os.path.join(tempfile.gettempdir(), "smartmii_login_state.json")
 
 LB_LOGLEVEL_MAP = {
     0: logging.CRITICAL + 10, 1: logging.CRITICAL, 2: logging.CRITICAL,

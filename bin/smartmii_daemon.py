@@ -10,9 +10,11 @@ import json
 import logging
 import logging.handlers
 import os
+import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import paho.mqtt.client as mqtt
@@ -65,7 +67,7 @@ COMMAND_MAP = {
     "fan_level":      (2, 2, lambda v: max(1, min(4, int(v)))),
     "oscillate":      (2, 3, None),
     "angle":          (2, 5, lambda v: int(v) if int(v) in (30, 60, 90, 120) else None),
-    "mode":           (2, 7, lambda v: 1 if v.lower() in ("straight", "1") else 0),
+    "mode":           (2, 7, lambda v: 1 if v.lower() in ("straight", "1") else (0 if v.lower() in ("natural", "0") else None)),
     "buzzer":         (5, 1, None),
 }
 
@@ -115,6 +117,9 @@ class SmartmiDaemon:
         self.mqtt_client = None
         self.running = False
         self.config_mtime = 0
+        self.session_path = None
+        self.session_mtime = 0
+        self._cmd_queue = queue.SimpleQueue()
 
     def setup_logging(self):
         os.makedirs(self.log_dir, exist_ok=True)
@@ -141,15 +146,23 @@ class SmartmiDaemon:
 
     def init_cloud(self):
         server = self.config.get("xiaomi_server", "de")
-        self.cloud = XiaomiCloudClient(server=server)
         config_dir = os.path.dirname(self.config_path)
         session_file = os.path.join(config_dir, self.config.get("session_file", "xiaomi_session.json"))
-        if not self.cloud.load_session(session_file):
+        self.session_path = session_file
+        client = XiaomiCloudClient(server=server)
+        if not client.load_session(session_file):
             logger.error("No Xiaomi Cloud session found at %s. Please login via the web UI.", session_file)
+            self.cloud = None
             return False
-        if not self.cloud.is_session_valid():
+        if not client.is_session_valid():
             logger.error("Xiaomi Cloud session expired. Please re-login via the web UI.")
+            self.cloud = None
             return False
+        self.cloud = client
+        try:
+            self.session_mtime = os.path.getmtime(session_file)
+        except OSError:
+            self.session_mtime = 0
         logger.info("Xiaomi Cloud session loaded (server: %s)", server)
         return True
 
@@ -206,6 +219,14 @@ class SmartmiDaemon:
 
         return True
 
+    def _cmd_worker(self):
+        while self.running:
+            try:
+                fan_id, command, payload = self._cmd_queue.get(timeout=1)
+                self._execute_command(fan_id, command, payload)
+            except queue.Empty:
+                continue
+
     def connect_mqtt(self):
         creds = get_mqtt_credentials()
         self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="smartmii-daemon")
@@ -254,11 +275,12 @@ class SmartmiDaemon:
         command = parts[2]
 
         if fan_id not in self.fans:
-            logger.warning("Command for unknown fan: %s", fan_id)
+            logger.warning("Command for unknown fan: %s", fan_id.replace("\n", "\\n").replace("\r", "\\r"))
             return
 
-        logger.info("Command: %s/%s = %r", fan_id, command, payload)
-        self._execute_command(fan_id, command, payload)
+        logger.info("Command: %s/%s = %r", fan_id.replace("\n", "\\n").replace("\r", "\\r"),
+                    command.replace("\n", "\\n").replace("\r", "\\r"), payload)
+        self._cmd_queue.put((fan_id, command, payload))
 
     def _execute_command(self, fan_id, command, payload):
         fan_entry = self.fans.get(fan_id)
@@ -339,6 +361,14 @@ class SmartmiDaemon:
                 self.load_and_apply_config()
         except OSError:
             pass
+        if self.session_path:
+            try:
+                mtime = os.path.getmtime(self.session_path)
+                if mtime > self.session_mtime:
+                    logger.info("Session file changed, re-initializing cloud...")
+                    self.init_cloud()
+            except OSError:
+                pass
 
     def shutdown(self, signum=None, frame=None):
         logger.info("Shutting down...")
@@ -375,13 +405,13 @@ class SmartmiDaemon:
             sys.exit(1)
 
         if not self.init_cloud():
-            logger.error("Cloud session not available, exiting")
-            sys.exit(1)
+            logger.warning("Cloud session not available at startup, will retry each poll cycle")
 
         self.connect_mqtt()
         time.sleep(1)
 
         self.running = True
+        threading.Thread(target=self._cmd_worker, daemon=True, name="cmd-worker").start()
         last_poll = 0
 
         while self.running:
@@ -389,7 +419,11 @@ class SmartmiDaemon:
             poll_interval = self.config.get("poll_interval", 30)
 
             if now - last_poll >= poll_interval:
-                self.poll_all_fans()
+                if self.cloud is None:
+                    logger.info("Retrying cloud init...")
+                    self.init_cloud()
+                if self.cloud is not None:
+                    self.poll_all_fans()
                 last_poll = now
 
             self.check_config_changed()

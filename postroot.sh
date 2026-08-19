@@ -17,7 +17,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "<INFO> Installing Python dependencies into venv..."
-"$VENVDIR/bin/pip" install paho-mqtt requests pycryptodome 2>&1
+"$VENVDIR/bin/pip" install --no-cache-dir "paho-mqtt>=2.0.0" "requests>=2.28.0" "pycryptodome>=3.18.0" 2>&1
 
 if [ $? -ne 0 ]; then
     echo "<FAIL> Failed to install Python dependencies"
