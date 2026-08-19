@@ -11,7 +11,6 @@ import hmac
 import json
 import logging
 import os
-import pickle
 import random
 import time
 
@@ -49,6 +48,7 @@ class XiaomiCloudClient:
                 "serviceToken": self._service_token,
                 "ssecurity": self._ssecurity,
             }, f)
+        os.chmod(path, 0o600)
 
     def load_session(self, path):
         logger.debug("Loading session from %s", path)
@@ -67,12 +67,12 @@ class XiaomiCloudClient:
     def save_login_state(self, path):
         """Save full client state (including HTTP session cookies) for multi-step login."""
         logger.debug("Saving login state to %s", path)
-        with open(path, "wb") as f:
-            pickle.dump({
+        with open(path, "w") as f:
+            json.dump({
                 "server": self.server,
                 "agent": self._agent,
                 "device_id": self._device_id,
-                "cookies": self._session.cookies.copy(),
+                "cookies": dict(self._session.cookies),
                 "ssecurity": self._ssecurity,
                 "user_id": self._user_id,
                 "service_token": self._service_token,
@@ -84,6 +84,7 @@ class XiaomiCloudClient:
                 "2fa_notification_url": getattr(self, "_2fa_notification_url", None),
                 "2fa_context": getattr(self, "_2fa_context", None),
             }, f)
+        os.chmod(path, 0o600)
 
     def load_login_state(self, path):
         """Restore client state from a previous login step."""
@@ -91,13 +92,13 @@ class XiaomiCloudClient:
         if not os.path.exists(path):
             logger.debug("Login state file not found: %s", path)
             return False
-        with open(path, "rb") as f:
-            state = pickle.load(f)
+        with open(path) as f:
+            state = json.load(f)
         self.server = state["server"]
         self._agent = state["agent"]
         self._device_id = state["device_id"]
         self._session = requests.Session()
-        self._session.cookies = state["cookies"]
+        self._session.cookies.update(state.get("cookies", {}))
         self._ssecurity = state["ssecurity"]
         self._user_id = state["user_id"]
         self._service_token = state["service_token"]
@@ -289,8 +290,12 @@ class XiaomiCloudClient:
             logger.error("API call failed: POST %s — %s", url, e)
             return None
         if response.status_code == 200:
-            decoded = self._decrypt_rc4(self._signed_nonce(fields["_nonce"]), response.text)
-            result = json.loads(decoded)
+            try:
+                decoded = self._decrypt_rc4(self._signed_nonce(fields["_nonce"]), response.text)
+                result = json.loads(decoded)
+            except (ValueError, Exception) as e:
+                logger.error("API response decode failed for POST %s: %s", url, e)
+                return None
             logger.debug("API response: POST %s — %s", url, result)
             return result
         logger.error("API returned HTTP %d for POST %s", response.status_code, url)

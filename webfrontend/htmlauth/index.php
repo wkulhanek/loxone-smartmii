@@ -1,4 +1,9 @@
 <?php
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
+}
+
 require_once "loxberry_system.php";
 require_once "loxberry_web.php";
 require_once "loxberry_log.php";
@@ -92,6 +97,11 @@ function cloud_command($python, $cloud_login, $input) {
 if (isset($_POST['ajax'])) {
     header('Content-Type: application/json');
     $action = $_POST['ajax'];
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'CSRF validation failed']);
+        exit;
+    }
     LOGSTART("AJAX: $action");
 
     if ($action === 'save_config') {
@@ -227,7 +237,7 @@ if (isset($_POST['ajax'])) {
     if ($action === 'daemon_restart') {
         LOGINF("Daemon restart requested");
         if (daemon_is_running($pidfile)) {
-            $pid = trim(file_get_contents($pidfile));
+            $pid = intval(trim(file_get_contents($pidfile)));
             exec("kill $pid 2>/dev/null");
             LOGINF("Stopped old daemon (PID $pid)");
             sleep(1);
@@ -246,7 +256,7 @@ if (isset($_POST['ajax'])) {
     if ($action === 'daemon_stop') {
         LOGINF("Daemon stop requested");
         if (daemon_is_running($pidfile)) {
-            $pid = trim(file_get_contents($pidfile));
+            $pid = intval(trim(file_get_contents($pidfile)));
             exec("kill $pid 2>/dev/null");
             LOGINF("Daemon stopped (PID $pid)");
             sleep(1);
@@ -477,6 +487,17 @@ LBWeb::lbheader($template_title, $helplink, $helptemplate);
 </div>
 
 <script>
+var _csrfToken = <?= json_encode($_SESSION['csrf_token']) ?>;
+$.ajaxSetup({
+    beforeSend: function(xhr, settings) {
+        var method = (settings.method || settings.type || '').toUpperCase();
+        if (method === 'POST') {
+            var token = 'csrf_token=' + encodeURIComponent(_csrfToken);
+            settings.data = settings.data ? settings.data + '&' + token : token;
+        }
+    }
+});
+
 var config = <?= json_encode($config) ?>;
 var L = {
     confirm_delete: <?= json_encode($L['BASIC.MSG_CONFIRM_DELETE']) ?>,
