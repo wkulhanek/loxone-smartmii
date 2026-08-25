@@ -310,6 +310,10 @@ class SmartmiDaemon:
             else:
                 value = parse_bool(payload)
 
+            if command != "power" and fan_entry.get("last_status", {}).get("power", "0") == "0":
+                logger.info("Skipping %s for %s: fan is off", command, fan_id)
+                return
+
             logger.debug("Sending %s/%s: did=%s siid=%d piid=%d value=%s", fan_id, command, did, siid, piid, value)
             success = self.cloud.set_property(did, siid, piid, value)
             if success:
