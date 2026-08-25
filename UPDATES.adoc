@@ -1,5 +1,13 @@
 = Smartmii Plugin -- Development Updates
 
+== 2026-08-25: Bug Fix -- Fan Turns On When Loxone Program Is Saved
+
+The Xiaomi fan firmware (zhimi.fan.za5) wakes itself up when any MIoT property (`fan_level`, `angle`, `mode`, `oscillate`) is set via the cloud API, even if the fan is currently off. When the Loxone program is saved, the Miniserver sends all Virtual Output values as a burst of MQTT messages. `power=off` arrives first and the daemon switches the fan off, but subsequent commands (`angle`, `oscillate`, `mode`) arrive 2–4 seconds later and silently turn the fan back on.
+
+=== Fix
+
+Added a power-state guard in `_execute_command`: before sending any non-power command to the cloud API, the daemon checks `last_status["power"]`. If it is `"0"`, the command is skipped and logged as `Skipping <command> for <fan>: fan is off`. Once `power=off` is processed and polled, the remaining burst commands are suppressed and the fan stays off.
+
 == 2026-07-12: Release Automation and Upgrade Safety
 
 Added automated GitHub release process and fixed plugin upgrades losing configuration.
