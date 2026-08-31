@@ -32,7 +32,11 @@ jobs:
       - name: Build plugin ZIP
         run: |
           zip -r "smartmii-${{ github.ref_name }}.zip" . \
-            -x '.git/*' '.github/*' '.gitignore' 'UPDATES.adoc' 'RELEASE.adoc' 'bin/__pycache__/*'
+            -x '.git/*' '.github/*' '.gitignore' \
+               '.claude/*' '.codegraph/*' '.crush/*' \
+               '.DS_Store' '*/.*' \
+               'UPDATES.adoc' 'UPDATES.md' 'RELEASE.adoc' \
+               '*/__pycache__/*'
 
       - name: Update release.cfg and commit
         env:
