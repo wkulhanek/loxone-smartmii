@@ -72,7 +72,10 @@ class XiaomiCloudClient:
                 "server": self.server,
                 "agent": self._agent,
                 "device_id": self._device_id,
-                "cookies": dict(self._session.cookies),
+                "cookies": [
+                    {"name": c.name, "value": c.value, "domain": c.domain, "path": c.path}
+                    for c in self._session.cookies
+                ],
                 "ssecurity": self._ssecurity,
                 "user_id": self._user_id,
                 "service_token": self._service_token,
@@ -98,7 +101,15 @@ class XiaomiCloudClient:
         self._agent = state["agent"]
         self._device_id = state["device_id"]
         self._session = requests.Session()
-        self._session.cookies.update(state.get("cookies", {}))
+        cookies = state.get("cookies", [])
+        if isinstance(cookies, dict):  # legacy format
+            cookies = [{"name": k, "value": v} for k, v in cookies.items()]
+        for c in cookies:
+            kwargs = {}
+            if c.get("domain"):
+                kwargs["domain"] = c["domain"]
+                kwargs["path"] = c.get("path") or "/"
+            self._session.cookies.set(c["name"], c["value"], **kwargs)
         self._ssecurity = state["ssecurity"]
         self._user_id = state["user_id"]
         self._service_token = state["service_token"]
@@ -428,7 +439,7 @@ class XiaomiCloudClient:
             "context": self._2fa_context, "mask": "0", "_locale": "en_US",
         }, data={
             "retry": "0", "icode": "", "_json": "true",
-            "ick": self._session.cookies.get("ick", ""),
+            "ick": self._get_cookie("ick"),
         }, headers=headers)
 
     def _do_2fa_verify(self, code):
@@ -440,7 +451,7 @@ class XiaomiCloudClient:
             "context": self._2fa_context, "mask": "0", "_locale": "en_US",
         }, data={
             "_flag": "8", "ticket": code, "trust": "false", "_json": "true",
-            "ick": self._session.cookies.get("ick", ""),
+            "ick": self._get_cookie("ick"),
         }, headers=headers)
 
         if r.status_code != 200:
@@ -521,6 +532,13 @@ class XiaomiCloudClient:
             or self._session.cookies.get("userId", domain=".sts.api.io.mi.com")
         )
         return True
+
+    def _get_cookie(self, name, default=""):
+        """Cookie lookup that tolerates the same name set on several domains."""
+        for c in self._session.cookies:
+            if c.name == name:
+                return c.value
+        return default
 
     # --- Internal: crypto helpers ---
 

@@ -183,4 +183,8 @@ def respond(data):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.exception("cloud_login failed")
+        respond({"status": "error", "message": f"{type(e).__name__}: {e}"})

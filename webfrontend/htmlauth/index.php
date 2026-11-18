@@ -80,17 +80,31 @@ function daemon_is_running($pidfile) {
 
 function cloud_command($python, $cloud_login, $input) {
     global $pluginlogdir;
+    if (!is_executable($python)) {
+        LOGERR("Python venv missing or not executable: $python");
+        return ['status' => 'error', 'message' => "Python venv not found ($python). Re-run the plugin installation."];
+    }
     $desc = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-    $env = array_merge($_ENV, ['LBPLOGDIR' => $pluginlogdir]);
-    $proc = proc_open("$python $cloud_login", $desc, $pipes, null, $env);
-    if (!is_resource($proc)) return null;
+    $env = array_merge(getenv() ?: [], $_ENV, ['LBPLOGDIR' => $pluginlogdir]);
+    $proc = proc_open([$python, $cloud_login], $desc, $pipes, null, $env);
+    if (!is_resource($proc)) {
+        LOGERR("proc_open failed for $python $cloud_login");
+        return null;
+    }
     fwrite($pipes[0], json_encode($input) . "\n");
     fclose($pipes[0]);
     $output = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
     fclose($pipes[1]);
     fclose($pipes[2]);
-    proc_close($proc);
-    return json_decode(trim($output), true);
+    $rc = proc_close($proc);
+    $decoded = json_decode(trim($output), true);
+    if ($decoded === null) {
+        LOGERR("cloud_login.py exit=$rc, invalid output. stdout: " . substr(trim($output), 0, 500) . " | stderr: " . substr(trim($stderr), 0, 1500));
+        $detail = trim($stderr) !== '' ? trim(strrchr(trim($stderr), "\n") ?: $stderr) : "exit code $rc";
+        return ['status' => 'error', 'message' => 'Login script failed: ' . $detail];
+    }
+    return $decoded;
 }
 
 // --- AJAX handlers ---

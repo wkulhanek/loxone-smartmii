@@ -1,5 +1,19 @@
 = Smartmii Plugin -- Development Updates
 
+== 2026-11-18: Bug Fix -- "Login script failed" on Xiaomi Cloud Login (v1.0.5)
+
+Logging in to the Xiaomi Cloud failed with a generic "Login script failed". The real error was a `CookieConflictError: There are multiple cookies with name 'sdkVersion'`.
+
+=== Cause
+
+`login()` sets `sdkVersion` and `deviceId` cookies on both `mi.com` and `xiaomi.com`. `save_login_state()` serialized the jar with `dict(self._session.cookies)`, which raises when two cookies share a name. The crash happened before any JSON was written, so the web UI only saw empty output.
+
+=== Fix
+
+* `bin/xiaomi_cloud.py` -- login state now stores cookies as a list of `{name, value, domain, path}` and restores them per domain (legacy flat-dict state files still load). The `ick` cookie lookups use a duplicate-tolerant `_get_cookie()` helper.
+* `bin/cloud_login.py` -- top-level exception handler logs the traceback and returns a JSON error instead of crashing silently.
+* `webfrontend/htmlauth/index.php` -- `cloud_command()` checks that the venv Python exists, captures stderr and exit code into the plugin log, and shows the last stderr line in the UI message.
+
 == 2026-08-25: Bug Fix -- Fan Turns On When Loxone Program Is Saved
 
 The Xiaomi fan firmware (zhimi.fan.za5) wakes itself up when any MIoT property (`fan_level`, `angle`, `mode`, `oscillate`) is set via the cloud API, even if the fan is currently off. When the Loxone program is saved, the Miniserver sends all Virtual Output values as a burst of MQTT messages. `power=off` arrives first and the daemon switches the fan off, but subsequent commands (`angle`, `oscillate`, `mode`) arrive 2–4 seconds later and silently turn the fan back on.
